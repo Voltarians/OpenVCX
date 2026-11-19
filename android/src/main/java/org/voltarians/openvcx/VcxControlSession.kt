@@ -11,6 +11,7 @@ class VcxControlSession(private val usb: VcxUsbTransport) : Closeable {
     private var closed = false
     private var faulted = false
     private var identity: VcxIdentity? = null
+    private var deviceInfo: ByteArray? = null
 
     @Synchronized fun identify(): VcxIdentity {
         check(!closed && !faulted)
@@ -18,13 +19,28 @@ class VcxControlSession(private val usb: VcxUsbTransport) : Closeable {
         val info = control(0x8c, 0, byteArrayOf(), 5000)
         if (!info.toString(Charsets.US_ASCII).contains("VCX-NANO"))
             throw IOException("Unqualified adapter identity")
+        deviceInfo = info
         return VcxIdentity("VCX-NANO", info.size).also { identity = it }
     }
 
-    /** No channel-open or entitlement-changing commands exposed in this revision. */
+    /** Uses the installed PASSTHRU entitlement. A rejected session requires reopening USB. */
+    @Synchronized fun establishPassThru() {
+        check(!closed && !faulted)
+        try {
+            identify()
+            VcxPassThruSession(
+                transact = { opcode, data -> control(opcode, 0, data, 5000) },
+                wallTimeMillis = System::currentTimeMillis,
+                uptimeMillis = SystemClock::elapsedRealtime,
+            ).establish(checkNotNull(deviceInfo))
+        } catch (e: Exception) {
+            faulted = true
+            throw e
+        }
+    }
+
     private fun control(opcode: Int, channel: Int, payload: ByteArray, timeoutMs: Int): ByteArray {
         check(!closed && !faulted)
-        require(opcode == 0x8c)
         try {
             usb.write(VcxFrame.encode(0, opcode, channel, payload))
             val deadline = SystemClock.elapsedRealtime() + timeoutMs
@@ -34,11 +50,11 @@ class VcxControlSession(private val usb: VcxUsbTransport) : Closeable {
                         (frame[2].toInt() and 255) != opcode ||
                         (frame[3].toInt() and 255) != channel) continue
                     val status = frame[4].toInt() and 255
-                    if (status != 0) throw IOException("VCX status 0x" + status.toString(16))
+                    if (status != 0) throw IOException("VCX opcode 0x${opcode.toString(16)} rejected: status 0x${status.toString(16)}")
                     return frame.copyOfRange(5, frame.size)
                 }
             }
-            throw IOException("VCX control timeout")
+            throw IOException("VCX opcode 0x${opcode.toString(16)} timed out")
         } catch (e: Exception) {
             faulted = true // Late replies must not be attributed to later requests.
             throw e
@@ -48,6 +64,8 @@ class VcxControlSession(private val usb: VcxUsbTransport) : Closeable {
     @Synchronized override fun close() {
         if (!closed) {
             closed = true
+            deviceInfo?.fill(0)
+            deviceInfo = null
             usb.close()
         }
     }
