@@ -109,6 +109,19 @@ sustained simultaneous dual-bus use still needs testing.
 For only one architecture, open PowerShell in the extracted folder and run
 `.\install.cmd -Arch x86` or `.\install.cmd -Arch x64`.
 
+### Android USB library
+
+Use `VcxUsbTransport.candidates(usbManager)` to find USB candidates and request
+Android USB permission for the selected device. On a worker thread, open it
+with `Elm327.openUsb(usbManager, device)` and call `command("0100")`. The first
+diagnostic request authenticates the Nano and opens CAN. A `41 00` reply is
+vehicle data. `ATRV` checks adapter supply voltage, and `lastError` gives the
+driver error after `CAN ERROR`. Close the `Elm327` instance when finished.
+
+The Android path supports classical CAN ISO 15765-4 OBD addressing at 250 or
+500 kbit/s, including multi-frame replies. This is an Android library for app
+integration. The native J2534 DLL above is for Windows.
+
 ### Troubleshooting and updates
 
 |              Problem               |                                      Try this                                                  |

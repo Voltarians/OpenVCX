@@ -5,10 +5,26 @@ interface ElmBackend {
     fun connect(bitrate: Int, extended: Boolean)
     fun exchange(id: Int, payload: ByteArray, extended: Boolean, timeoutMs: Int): List<Pair<Int, ByteArray>>
     fun voltage(): Double
+    fun disconnect() = close()
     fun close()
 }
 
-class Elm327(private val backend: ElmBackend) {
+class Elm327(private val backend: ElmBackend) : java.io.Closeable {
+    companion object {
+        /** Open on a worker thread after Android USB permission is granted. */
+        fun openUsb(manager: android.hardware.usb.UsbManager, device: android.hardware.usb.UsbDevice): Elm327 =
+            Elm327(VcxElmBackend.open(manager, device))
+    }
+
+    /** Driver failure from the most recent command, for diagnostics alongside CAN ERROR. */
+    @Volatile var lastError: Exception? = null
+        private set
+
+    @Synchronized override fun close() {
+        connected = false
+        backend.close()
+    }
+
     private var echo = true
     private var spaces = true
     private var lines = true
@@ -20,7 +36,7 @@ class Elm327(private val backend: ElmBackend) {
     private var timeout = 200
     private var previous = ""
     private fun reset() {
-        backend.close()
+        backend.disconnect()
         connected = false
         echo = true; spaces = true; lines = true; headers = false
         protocol = 0; header = null; filter = null; timeout = 200; previous = ""
@@ -29,7 +45,15 @@ class Elm327(private val backend: ElmBackend) {
         val cmd = raw.filterNot { it.isWhitespace() }.uppercase().ifEmpty { previous }
         previous = cmd
         val prefix = if (echo && raw.isNotBlank()) raw.trim()+"\r" else ""
-        val result = try { execute(cmd) } catch (e: Exception) { connected = false; runCatching { backend.close() }; "CAN ERROR" }
+        lastError = null
+        val result = try {
+            execute(cmd)
+        } catch (e: Exception) {
+            lastError = e
+            connected = false
+            runCatching { backend.disconnect() }
+            "CAN ERROR"
+        }
         val sep = if (lines) "\r\n" else "\r"
         return prefix + result.replace("\n",sep) + sep + ">"
     }
@@ -49,7 +73,7 @@ class Elm327(private val backend: ElmBackend) {
             return "OK"
         }
         if (cmd.matches(Regex("ATSP[06789]"))) {
-            backend.close(); connected=false; protocol=cmd.last().digitToInt(); header=null; filter=null
+            backend.disconnect(); connected=false; protocol=cmd.last().digitToInt(); header=null; filter=null
             return "OK"
         }
         if (cmd.matches(Regex("ATST[0-9A-F]{2}"))) {
